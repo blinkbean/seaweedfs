@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path"
 	"regexp"
 	"sort"
@@ -58,6 +59,9 @@ func (l *DiskLocation) LoadEcShard(collection string, vid needle.VolumeId, shard
 
 	ecVolumeShard, err := erasure_coding.NewEcVolumeShard(l.Directory, collection, vid, shardId)
 	if err != nil {
+		if err == os.ErrNotExist {
+			return os.ErrNotExist
+		}
 		return fmt.Errorf("failed to create ec shard %d.%d: %v", vid, shardId, err)
 	}
 	l.ecVolumesLock.Lock()
@@ -168,4 +172,25 @@ func (l *DiskLocation) deleteEcVolumeById(vid needle.VolumeId) (e error) {
 	ecVolume.Destroy()
 	delete(l.ecVolumes, vid)
 	return
+}
+
+func (l *DiskLocation) unmountEcVolumeByCollection(collectionName string) map[needle.VolumeId]*erasure_coding.EcVolume {
+	deltaVols := make(map[needle.VolumeId]*erasure_coding.EcVolume, 0)
+	for k, v := range l.ecVolumes {
+		if v.Collection == collectionName {
+			deltaVols[k] = v
+		}
+	}
+
+	for k, _ := range deltaVols {
+		delete(l.ecVolumes, k)
+	}
+	return deltaVols
+}
+
+func (l *DiskLocation) EcVolumesLen() int {
+	l.ecVolumesLock.RLock()
+	defer l.ecVolumesLock.RUnlock()
+
+	return len(l.ecVolumes)
 }

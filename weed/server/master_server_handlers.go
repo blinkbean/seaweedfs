@@ -45,10 +45,10 @@ func (ms *MasterServer) dirLookupHandler(w http.ResponseWriter, r *http.Request)
 			vid = fileId[0:commaSep]
 		}
 	}
-	collection := r.FormValue("collection") //optional, but can be faster if too many collections
+	collection := r.FormValue("collection") // optional, but can be faster if too many collections
 	location := ms.findVolumeLocation(collection, vid)
 	httpStatus := http.StatusOK
-	if location.Error != "" {
+	if location.Error != "" || location.Locations == nil {
 		httpStatus = http.StatusNotFound
 	} else {
 		forRead := r.FormValue("read")
@@ -60,22 +60,28 @@ func (ms *MasterServer) dirLookupHandler(w http.ResponseWriter, r *http.Request)
 
 // findVolumeLocation finds the volume location from master topo if it is leader,
 // or from master client if not leader
-func (ms *MasterServer) findVolumeLocation(collection string, vid string) operation.LookupResult {
+func (ms *MasterServer) findVolumeLocation(collection, vid string) operation.LookupResult {
 	var locations []operation.Location
 	var err error
 	if ms.Topo.IsLeader() {
 		volumeId, newVolumeIdErr := needle.NewVolumeId(vid)
-		machines := ms.Topo.Lookup(collection, volumeId)
-		for _, loc := range machines {
-			locations = append(locations, operation.Location{Url: loc.Url(), PublicUrl: loc.PublicUrl})
+		if newVolumeIdErr != nil {
+			err = fmt.Errorf("Unknown volume id %s", vid)
+		} else {
+			machines := ms.Topo.Lookup(collection, volumeId)
+			for _, loc := range machines {
+				locations = append(locations, operation.Location{Url: loc.Url(), PublicUrl: loc.PublicUrl})
+			}
 		}
-		err = newVolumeIdErr
 	} else {
 		machines, getVidLocationsErr := ms.MasterClient.GetVidLocations(vid)
 		for _, loc := range machines {
 			locations = append(locations, operation.Location{Url: loc.Url, PublicUrl: loc.PublicUrl})
 		}
 		err = getVidLocationsErr
+	}
+	if len(locations) == 0 && err == nil {
+		err = fmt.Errorf("volume id %s not found", vid)
 	}
 	ret := operation.LookupResult{
 		VolumeId:  vid,
@@ -94,6 +100,11 @@ func (ms *MasterServer) dirAssignHandler(w http.ResponseWriter, r *http.Request)
 		requestedCount = 1
 	}
 
+	writableVolumeCount, e := strconv.Atoi(r.FormValue("writableVolumeCount"))
+	if e != nil {
+		writableVolumeCount = 0
+	}
+
 	option, err := ms.getVolumeGrowOption(r)
 	if err != nil {
 		writeJsonQuiet(w, r, http.StatusNotAcceptable, operation.AssignResult{Error: err.Error()})
@@ -108,7 +119,7 @@ func (ms *MasterServer) dirAssignHandler(w http.ResponseWriter, r *http.Request)
 		ms.vgLock.Lock()
 		defer ms.vgLock.Unlock()
 		if !ms.Topo.HasWritableVolume(option) {
-			if _, err = ms.vg.AutomaticGrowByType(option, ms.grpcDialOpiton, ms.Topo); err != nil {
+			if _, err = ms.vg.AutomaticGrowByType(option, ms.grpcDialOption, ms.Topo, writableVolumeCount); err != nil {
 				writeJsonError(w, r, http.StatusInternalServerError,
 					fmt.Errorf("Cannot grow volume group! %v", err))
 				return

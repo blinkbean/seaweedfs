@@ -1,29 +1,36 @@
 package command
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
+	"os"
+	"time"
 )
 
 type MountOptions struct {
-	filer              *string
-	filerMountRootPath *string
-	dir                *string
-	dirListingLimit    *int
-	collection         *string
-	replication        *string
-	ttlSec             *int
-	chunkSizeLimitMB   *int
-	dataCenter         *string
-	allowOthers        *bool
-	umaskString        *string
+	filer                       *string
+	filerMountRootPath          *string
+	dir                         *string
+	dirAutoCreate               *bool
+	collection                  *string
+	replication                 *string
+	ttlSec                      *int
+	chunkSizeLimitMB            *int
+	concurrentWriters           *int
+	cacheDir                    *string
+	cacheSizeMB                 *int64
+	dataCenter                  *string
+	allowOthers                 *bool
+	umaskString                 *string
+	nonempty                    *bool
+	outsideContainerClusterMode *bool
+	uidMap                      *string
+	gidMap                      *string
 }
 
 var (
-	mountOptions    MountOptions
-	mountCpuProfile *string
-	mountMemProfile *string
+	mountOptions       MountOptions
+	mountCpuProfile    *string
+	mountMemProfile    *string
+	mountReadRetryTime *time.Duration
 )
 
 func init() {
@@ -31,16 +38,25 @@ func init() {
 	mountOptions.filer = cmdMount.Flag.String("filer", "localhost:8888", "weed filer location")
 	mountOptions.filerMountRootPath = cmdMount.Flag.String("filer.path", "/", "mount this remote path from filer server")
 	mountOptions.dir = cmdMount.Flag.String("dir", ".", "mount weed filer to this directory")
-	mountOptions.dirListingLimit = cmdMount.Flag.Int("dirListLimit", 100000, "limit directory listing size")
+	mountOptions.dirAutoCreate = cmdMount.Flag.Bool("dirAutoCreate", false, "auto create the directory to mount to")
 	mountOptions.collection = cmdMount.Flag.String("collection", "", "collection to create the files")
 	mountOptions.replication = cmdMount.Flag.String("replication", "", "replication(e.g. 000, 001) to create to files. If empty, let filer decide.")
 	mountOptions.ttlSec = cmdMount.Flag.Int("ttl", 0, "file ttl in seconds")
-	mountOptions.chunkSizeLimitMB = cmdMount.Flag.Int("chunkSizeLimitMB", 4, "local write buffer size, also chunk large files")
+	mountOptions.chunkSizeLimitMB = cmdMount.Flag.Int("chunkSizeLimitMB", 2, "local write buffer size, also chunk large files")
+	mountOptions.concurrentWriters = cmdMount.Flag.Int("concurrentWriters", 0, "limit concurrent goroutine writers if not 0")
+	mountOptions.cacheDir = cmdMount.Flag.String("cacheDir", os.TempDir(), "local cache directory for file chunks and meta data")
+	mountOptions.cacheSizeMB = cmdMount.Flag.Int64("cacheCapacityMB", 1000, "local file chunk cache capacity in MB (0 will disable cache)")
 	mountOptions.dataCenter = cmdMount.Flag.String("dataCenter", "", "prefer to write to the data center")
 	mountOptions.allowOthers = cmdMount.Flag.Bool("allowOthers", true, "allows other users to access the file system")
 	mountOptions.umaskString = cmdMount.Flag.String("umask", "022", "octal umask, e.g., 022, 0111")
+	mountOptions.nonempty = cmdMount.Flag.Bool("nonempty", false, "allows the mounting over a non-empty directory")
+	mountOptions.outsideContainerClusterMode = cmdMount.Flag.Bool("outsideContainerClusterMode", false, "allows other users to access volume servers with publicUrl")
+	mountOptions.uidMap = cmdMount.Flag.String("map.uid", "", "map local uid to uid on filer, comma-separated <local_uid>:<filer_uid>")
+	mountOptions.gidMap = cmdMount.Flag.String("map.gid", "", "map local gid to gid on filer, comma-separated <local_gid>:<filer_gid>")
+
 	mountCpuProfile = cmdMount.Flag.String("cpuprofile", "", "cpu profile output file")
 	mountMemProfile = cmdMount.Flag.String("memprofile", "", "memory profile output file")
+	mountReadRetryTime = cmdMount.Flag.Duration("readRetryTime", 6*time.Second, "maximum read retry wait time")
 }
 
 var cmdMount = &Command{
@@ -59,20 +75,4 @@ var cmdMount = &Command{
   On OS X, it requires OSXFUSE (http://osxfuse.github.com/).
 
   `,
-}
-
-func parseFilerGrpcAddress(filer string) (filerGrpcAddress string, err error) {
-	hostnameAndPort := strings.Split(filer, ":")
-	if len(hostnameAndPort) != 2 {
-		return "", fmt.Errorf("The filer should have hostname:port format: %v", hostnameAndPort)
-	}
-
-	filerPort, parseErr := strconv.ParseUint(hostnameAndPort[1], 10, 64)
-	if parseErr != nil {
-		return "", fmt.Errorf("The filer filer port parse error: %v", parseErr)
-	}
-
-	filerGrpcPort := int(filerPort) + 10000
-
-	return fmt.Sprintf("%s:%d", hostnameAndPort[0], filerGrpcPort), nil
 }

@@ -3,42 +3,54 @@ package filesys
 import (
 	"context"
 
-	"github.com/chrislusf/seaweedfs/weed/filer2"
+	"google.golang.org/grpc"
+
+	"github.com/chrislusf/seaweedfs/weed/filer"
 	"github.com/chrislusf/seaweedfs/weed/glog"
 	"github.com/chrislusf/seaweedfs/weed/operation"
 	"github.com/chrislusf/seaweedfs/weed/pb/filer_pb"
-	"google.golang.org/grpc"
 )
 
-func (wfs *WFS) deleteFileChunks(ctx context.Context, chunks []*filer_pb.FileChunk) {
+func (wfs *WFS) deleteFileChunks(chunks []*filer_pb.FileChunk) {
 	if len(chunks) == 0 {
 		return
 	}
 
 	var fileIds []string
 	for _, chunk := range chunks {
+		if !chunk.IsChunkManifest {
+			fileIds = append(fileIds, chunk.GetFileIdString())
+			continue
+		}
+		dataChunks, manifestResolveErr := filer.ResolveOneChunkManifest(filer.LookupFn(wfs), chunk)
+		if manifestResolveErr != nil {
+			glog.V(0).Infof("failed to resolve manifest %s: %v", chunk.FileId, manifestResolveErr)
+		}
+		for _, dChunk := range dataChunks {
+			fileIds = append(fileIds, dChunk.GetFileIdString())
+		}
 		fileIds = append(fileIds, chunk.GetFileIdString())
 	}
 
-	wfs.WithFilerClient(ctx, func(client filer_pb.SeaweedFilerClient) error {
-		deleteFileIds(ctx, wfs.option.GrpcDialOption, client, fileIds)
+	wfs.WithFilerClient(func(client filer_pb.SeaweedFilerClient) error {
+		wfs.deleteFileIds(wfs.option.GrpcDialOption, client, fileIds)
 		return nil
 	})
 }
 
-func deleteFileIds(ctx context.Context, grpcDialOption grpc.DialOption, client filer_pb.SeaweedFilerClient, fileIds []string) error {
+func (wfs *WFS) deleteFileIds(grpcDialOption grpc.DialOption, client filer_pb.SeaweedFilerClient, fileIds []string) error {
 
 	var vids []string
 	for _, fileId := range fileIds {
-		vids = append(vids, filer2.VolumeId(fileId))
+		vids = append(vids, filer.VolumeId(fileId))
 	}
 
 	lookupFunc := func(vids []string) (map[string]operation.LookupResult, error) {
 
 		m := make(map[string]operation.LookupResult)
 
-		glog.V(4).Infof("remove file lookup volume id locations: %v", vids)
-		resp, err := client.LookupVolume(ctx, &filer_pb.LookupVolumeRequest{
+		glog.V(4).Infof("deleteFileIds lookup volume id locations: %v", vids)
+		resp, err := client.LookupVolume(context.Background(), &filer_pb.LookupVolumeRequest{
 			VolumeIds: vids,
 		})
 		if err != nil {
@@ -50,10 +62,13 @@ func deleteFileIds(ctx context.Context, grpcDialOption grpc.DialOption, client f
 				VolumeId:  vid,
 				Locations: nil,
 			}
-			locations := resp.LocationsMap[vid]
+			locations, found := resp.LocationsMap[vid]
+			if !found {
+				continue
+			}
 			for _, loc := range locations.Locations {
 				lr.Locations = append(lr.Locations, operation.Location{
-					Url:       loc.Url,
+					Url:       wfs.AdjustedUrl(loc),
 					PublicUrl: loc.PublicUrl,
 				})
 			}

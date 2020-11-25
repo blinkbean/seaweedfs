@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chrislusf/seaweedfs/weed/pb"
 	"github.com/chrislusf/seaweedfs/weed/pb/master_pb"
+	"github.com/chrislusf/seaweedfs/weed/pb/volume_server_pb"
 	"github.com/chrislusf/seaweedfs/weed/storage/idx"
 	"github.com/chrislusf/seaweedfs/weed/storage/needle"
 	"github.com/chrislusf/seaweedfs/weed/storage/types"
@@ -54,6 +56,14 @@ func NewEcVolume(dir string, collection string, vid needle.VolumeId) (ev *EcVolu
 	// open ecj file
 	if ev.ecjFile, err = os.OpenFile(baseFileName+".ecj", os.O_RDWR|os.O_CREATE, 0644); err != nil {
 		return nil, fmt.Errorf("cannot open ec volume journal %s.ecj: %v", baseFileName, err)
+	}
+
+	// read volume info
+	ev.Version = needle.Version3
+	if volumeInfo, found, _ := pb.MaybeLoadVolumeInfo(baseFileName + ".vif"); found {
+		ev.Version = needle.Version(volumeInfo.Version)
+	} else {
+		pb.SaveVolumeInfo(baseFileName+".vif", &volume_server_pb.VolumeInfo{Version: uint32(ev.Version)})
 	}
 
 	ev.ShardLocations = make(map[ShardId][]string)
@@ -126,6 +136,7 @@ func (ev *EcVolume) Destroy() {
 	}
 	os.Remove(ev.FileName() + ".ecx")
 	os.Remove(ev.FileName() + ".ecj")
+	os.Remove(ev.FileName() + ".vif")
 }
 
 func (ev *EcVolume) FileName() string {
@@ -134,11 +145,18 @@ func (ev *EcVolume) FileName() string {
 
 }
 
-func (ev *EcVolume) ShardSize() int64 {
+func (ev *EcVolume) ShardSize() uint64 {
 	if len(ev.Shards) > 0 {
-		return ev.Shards[0].Size()
+		return uint64(ev.Shards[0].Size())
 	}
 	return 0
+}
+
+func (ev *EcVolume) Size() (size int64) {
+	for _, shard := range ev.Shards {
+		size += shard.Size()
+	}
+	return
 }
 
 func (ev *EcVolume) CreatedAt() time.Time {
@@ -169,7 +187,7 @@ func (ev *EcVolume) ToVolumeEcShardInformationMessage() (messages []*master_pb.V
 	return
 }
 
-func (ev *EcVolume) LocateEcShardNeedle(needleId types.NeedleId, version needle.Version) (offset types.Offset, size uint32, intervals []Interval, err error) {
+func (ev *EcVolume) LocateEcShardNeedle(needleId types.NeedleId, version needle.Version) (offset types.Offset, size types.Size, intervals []Interval, err error) {
 
 	// find the needle from ecx file
 	offset, size, err = ev.FindNeedleFromEcx(needleId)
@@ -180,16 +198,16 @@ func (ev *EcVolume) LocateEcShardNeedle(needleId types.NeedleId, version needle.
 	shard := ev.Shards[0]
 
 	// calculate the locations in the ec shards
-	intervals = LocateData(ErasureCodingLargeBlockSize, ErasureCodingSmallBlockSize, DataShardsCount*shard.ecdFileSize, offset.ToAcutalOffset(), uint32(needle.GetActualSize(size, version)))
+	intervals = LocateData(ErasureCodingLargeBlockSize, ErasureCodingSmallBlockSize, DataShardsCount*shard.ecdFileSize, offset.ToAcutalOffset(), types.Size(needle.GetActualSize(size, version)))
 
 	return
 }
 
-func (ev *EcVolume) FindNeedleFromEcx(needleId types.NeedleId) (offset types.Offset, size uint32, err error) {
-	return searchNeedleFromEcx(ev.ecxFile, ev.ecxFileSize, needleId, nil)
+func (ev *EcVolume) FindNeedleFromEcx(needleId types.NeedleId) (offset types.Offset, size types.Size, err error) {
+	return SearchNeedleFromSortedIndex(ev.ecxFile, ev.ecxFileSize, needleId, nil)
 }
 
-func searchNeedleFromEcx(ecxFile *os.File, ecxFileSize int64, needleId types.NeedleId, processNeedleFn func(file *os.File, offset int64) error) (offset types.Offset, size uint32, err error) {
+func SearchNeedleFromSortedIndex(ecxFile *os.File, ecxFileSize int64, needleId types.NeedleId, processNeedleFn func(file *os.File, offset int64) error) (offset types.Offset, size types.Size, err error) {
 	var key types.NeedleId
 	buf := make([]byte, types.NeedleMapEntrySize)
 	l, h := int64(0), ecxFileSize/types.NeedleMapEntrySize

@@ -1,11 +1,12 @@
 package needle
 
 import (
+	"fmt"
 	"strconv"
 )
 
 const (
-	//stored unit types
+	// stored unit types
 	Empty byte = iota
 	Minute
 	Hour
@@ -69,6 +70,9 @@ func (t *TTL) ToBytes(output []byte) {
 }
 
 func (t *TTL) ToUint32() (output uint32) {
+	if t == nil || t.Count == 0 {
+		return 0
+	}
 	output = uint32(t.Count) << 8
 	output += uint32(t.Unit)
 	return output
@@ -135,4 +139,11 @@ func (t TTL) Minutes() uint32 {
 		return uint32(t.Count) * 60 * 24 * 365
 	}
 	return 0
+}
+
+func SecondsToTTL(seconds int32) string {
+	if seconds == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%dm", seconds/60)
 }

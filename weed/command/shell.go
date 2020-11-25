@@ -1,19 +1,22 @@
 package command
 
 import (
+	"fmt"
+
 	"github.com/chrislusf/seaweedfs/weed/security"
 	"github.com/chrislusf/seaweedfs/weed/shell"
 	"github.com/chrislusf/seaweedfs/weed/util"
-	"github.com/spf13/viper"
 )
 
 var (
-	shellOptions shell.ShellOptions
+	shellOptions      shell.ShellOptions
+	shellInitialFiler *string
 )
 
 func init() {
 	cmdShell.Run = runShell // break init cycle
 	shellOptions.Masters = cmdShell.Flag.String("master", "localhost:9333", "comma-separated master servers")
+	shellInitialFiler = cmdShell.Flag.String("filer", "localhost:8888", "filer host and port")
 }
 
 var cmdShell = &Command{
@@ -24,15 +27,17 @@ var cmdShell = &Command{
   `,
 }
 
-var ()
-
 func runShell(command *Command, args []string) bool {
 
 	util.LoadConfiguration("security", false)
-	shellOptions.GrpcDialOption = security.LoadClientTLS(viper.Sub("grpc"), "client")
+	shellOptions.GrpcDialOption = security.LoadClientTLS(util.GetViper(), "grpc.client")
 
-	shellOptions.FilerHost = "localhost"
-	shellOptions.FilerPort = 8888
+	var err error
+	shellOptions.FilerHost, shellOptions.FilerPort, err = util.ParseHostPort(*shellInitialFiler)
+	if err != nil {
+		fmt.Printf("failed to parse filer %s: %v\n", *shellInitialFiler, err)
+		return false
+	}
 	shellOptions.Directory = "/"
 
 	shell.RunShell(shellOptions)

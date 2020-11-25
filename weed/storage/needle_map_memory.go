@@ -22,39 +22,24 @@ func NewCompactNeedleMap(file *os.File) *NeedleMap {
 	return nm
 }
 
-func NewBtreeNeedleMap(file *os.File) *NeedleMap {
-	nm := &NeedleMap{
-		m: needle_map.NewBtreeMap(),
-	}
-	nm.indexFile = file
-	return nm
-}
-
 func LoadCompactNeedleMap(file *os.File) (*NeedleMap, error) {
 	nm := NewCompactNeedleMap(file)
 	return doLoading(file, nm)
 }
 
-func LoadBtreeNeedleMap(file *os.File) (*NeedleMap, error) {
-	nm := NewBtreeNeedleMap(file)
-	return doLoading(file, nm)
-}
-
 func doLoading(file *os.File, nm *NeedleMap) (*NeedleMap, error) {
-	e := idx.WalkIndexFile(file, func(key NeedleId, offset Offset, size uint32) error {
+	e := idx.WalkIndexFile(file, func(key NeedleId, offset Offset, size Size) error {
 		nm.MaybeSetMaxFileKey(key)
-		if !offset.IsZero() && size != TombstoneFileSize {
+		if !offset.IsZero() && size.IsValid() {
 			nm.FileCounter++
 			nm.FileByteCounter = nm.FileByteCounter + uint64(size)
 			oldOffset, oldSize := nm.m.Set(NeedleId(key), offset, size)
-			// glog.V(3).Infoln("reading key", key, "offset", offset*NeedlePaddingSize, "size", size, "oldSize", oldSize)
-			if !oldOffset.IsZero() && oldSize != TombstoneFileSize {
+			if !oldOffset.IsZero() && oldSize.IsValid() {
 				nm.DeletionCounter++
 				nm.DeletionByteCounter = nm.DeletionByteCounter + uint64(oldSize)
 			}
 		} else {
 			oldSize := nm.m.Delete(NeedleId(key))
-			// glog.V(3).Infoln("removing key", key, "offset", offset*NeedlePaddingSize, "size", size, "oldSize", oldSize)
 			nm.DeletionCounter++
 			nm.DeletionByteCounter = nm.DeletionByteCounter + uint64(oldSize)
 		}
@@ -64,7 +49,7 @@ func doLoading(file *os.File, nm *NeedleMap) (*NeedleMap, error) {
 	return nm, e
 }
 
-func (nm *NeedleMap) Put(key NeedleId, offset Offset, size uint32) error {
+func (nm *NeedleMap) Put(key NeedleId, offset Offset, size Size) error {
 	_, oldSize := nm.m.Set(NeedleId(key), offset, size)
 	nm.logPut(key, oldSize, size)
 	return nm.appendToIndexFile(key, offset, size)
@@ -79,6 +64,10 @@ func (nm *NeedleMap) Delete(key NeedleId, offset Offset) error {
 	return nm.appendToIndexFile(key, offset, TombstoneFileSize)
 }
 func (nm *NeedleMap) Close() {
+	indexFileName := nm.indexFile.Name()
+	if err := nm.indexFile.Sync(); err != nil {
+		glog.Warningf("sync file %s failed, %v", indexFileName, err)
+	}
 	_ = nm.indexFile.Close()
 }
 func (nm *NeedleMap) Destroy() error {
